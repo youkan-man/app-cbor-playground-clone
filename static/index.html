@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ja" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#131820">
+  <title>CBOR Workbench</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232bc7a4'/%3E%3Cpath d='m20 9-8 7 8 7M9 9h-3v14h3' fill='none' stroke='%23131820' stroke-width='3'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" type="module"></script>
+</head>
+<body>
+<header class="app-header">
+  <button class="icon-button mobile-history" id="historyToggle" title="履歴の表示切替" aria-label="履歴の表示切替">☰</button>
+  <div class="brand"><span class="brand-icon">{<span>:</span>}</span><strong>CBOR <span>Workbench</span></strong><span class="version">1.0</span></div>
+  <div class="header-tools">
+    <span class="local-label"><i></i>SELF-HOSTED</span>
+    <button class="icon-button" id="helpButton" title="操作・探索ルール" aria-label="操作・探索ルール">?</button>
+    <button class="icon-button" id="themeButton" title="テーマ切替" aria-label="テーマ切替">◐</button>
+    <button class="primary" id="analyzeButton"><span>▶</span> 解析 <kbd>Ctrl ↵</kbd></button>
+  </div>
+</header>
+<main class="app-shell" id="shell">
+  <aside class="history-pane" aria-label="解析履歴">
+    <div class="panel-heading"><h2>履歴 <span class="counter" id="historyCount">0</span></h2><button class="icon-button" id="newButton" title="新しい解析" aria-label="新しい解析">＋</button></div>
+    <div class="history-search"><input id="historySearch" type="search" placeholder="履歴を検索…" aria-label="履歴を検索"></div>
+    <div id="historyList" class="history-list" aria-label="保存済みの解析"></div>
+    <div class="history-footer"><span id="compareHint">2件選択して比較</span><button id="compareButton" disabled>比較</button></div>
+  </aside>
+  <div class="splitter vertical" id="sidebarSplitter" role="separator" tabindex="0" aria-label="履歴の幅" aria-orientation="vertical"></div>
+  <section class="workspace">
+    <div class="work-toolbar">
+      <span class="work-caption">PLAYGROUND</span>
+      <input id="analysisTitle" placeholder="解析名（省略可）" aria-label="解析名" maxlength="180">
+      <div class="toolbar-right"><label class="check-label"><input type="checkbox" id="scanToggle" checked>全オフセット探索</label><label class="check-label"><input type="checkbox" id="sequenceToggle">Sequence</label><label class="offset-label">開始 <input id="manualOffset" value="0" aria-label="開始オフセット" disabled></label></div>
+    </div>
+    <div class="analysis-grid" id="analysisGrid">
+      <section class="source-column" id="sourceColumn">
+        <section class="source-panel" id="sourcePanel">
+          <div class="panel-heading"><h2>入力</h2><select id="inputFormat" aria-label="入力形式"><option value="hex">HEX</option><option value="base64">Base64</option><option value="diagnostic">Diagnostic</option><option value="json">JSON</option></select><span class="spacer"></span><button id="sampleButton">サンプル⌄</button><button id="fileButton">ファイルを開く</button></div>
+          <textarea id="sourceInput" spellcheck="false" aria-label="解析するデータ" placeholder="HEX / Base64 / Diagnostic / JSON を入力。ファイルをドロップできます。"></textarea>
+          <div class="editor-footer"><span id="inputInfo">HEX · UTF-8</span><span>右クリックで入力操作</span></div>
+        </section>
+        <div class="splitter horizontal" id="sourceSplitter" role="separator" tabindex="0" aria-label="入力欄の高さ" aria-orientation="horizontal"></div>
+        <section class="binary-panel">
+          <div class="panel-heading"><h2>バイト表示</h2><span id="byteCount" class="muted mono">—</span><span class="spacer"></span><label class="goto-label">移動 <input id="byteGoto" placeholder="0x00" aria-label="バイトオフセットへ移動"></label><button id="copyHexButton" title="HEXのみコピー">コピー</button></div>
+          <div class="hex-labels"><span>OFFSET</span><span>00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F</span><span>ASCII</span></div>
+          <div id="hexView" class="hex-view virtual-scroll" tabindex="0" aria-label="バイナリ。クリックまたはドラッグで選択。Shiftクリックで範囲選択。"></div>
+          <div class="binary-footer"><span id="selectionInfo">選択なし</span><span class="legend"><i class="parsed-dot"></i>解析範囲 <i class="selected-dot"></i>選択</span></div>
+        </section>
+      </section>
+      <div class="splitter vertical" id="mainSplitter" role="separator" tabindex="0" aria-label="入力と結果の幅" aria-orientation="vertical"></div>
+      <section class="result-column">
+        <div class="panel-heading result-heading"><h2>解析結果</h2><span class="result-state" id="resultState">未解析</span><span class="spacer"></span><button id="exportButton" disabled>書き出し⌄</button></div>
+        <div class="metrics" id="metrics"><div><span>OFFSET</span><strong id="metricOffset">—</strong></div><div><span>HITS</span><strong id="metricHits">—</strong></div><div><span>DECODED</span><strong id="metricBytes">—</strong></div><div><span>ITEMS</span><strong id="metricItems">—</strong></div></div>
+        <div class="result-tabs" role="tablist" aria-label="解析結果の表示形式"><button role="tab" aria-selected="true" data-view="tree">構造ツリー</button><button role="tab" aria-selected="false" data-view="diagnostic">Diagnostic</button><button role="tab" aria-selected="false" data-view="json">JSON</button><span class="spacer"></span><button class="icon-button" id="collapseButton" title="すべて折りたたむ" aria-label="すべて折りたたむ">⊟</button><button class="icon-button" id="expandButton" title="すべて展開" aria-label="すべて展開">⊞</button><button class="icon-button" id="copyResultButton" title="表示結果をコピー" aria-label="表示結果をコピー">⧉</button></div>
+        <div class="tree-toolbar" id="treeToolbar"><input type="search" id="treeSearch" placeholder="キー・値・型を検索…" aria-label="解析結果を検索"><span class="muted" id="treeCount">0 要素</span></div>
+        <div class="tree-labels" id="treeLabels"><span>要素 / 値</span><span>TYPE</span><span>OFFSET</span><span>BYTES</span></div>
+        <div class="result-body" id="resultBody"><div id="treeView" class="virtual-scroll" role="tree" tabindex="0" aria-label="CBOR 構造"></div><pre id="textResult" hidden tabindex="0"></pre><div class="empty-result" id="emptyResult"><span>{ : }</span><strong>データを解析</strong><p>全バイト位置を探索し、最多ヒットの候補を表示します。</p><button id="emptySampleButton">サンプルを試す</button></div></div>
+        <div id="parseWarning" class="parse-warning" hidden></div>
+        <div class="splitter horizontal" id="candidateSplitter" role="separator" tabindex="0" aria-label="候補一覧の高さ" aria-orientation="horizontal"></div>
+        <section class="candidates-panel" id="candidatesPanel">
+          <div class="panel-heading"><h2>探索候補 <span class="counter" id="candidateCount">0</span></h2><span class="spacer"></span><span class="muted" title="ヒット数 → 解析バイト数 → 連続トップレベル要素数 → 開始位置の順">ヒット順 ↓</span></div>
+          <div class="candidate-labels"><span>#</span><span>OFFSET</span><span>HITS</span><span>BYTES</span><span>ITEMS</span><span>末尾</span></div>
+          <div id="candidateList" class="virtual-scroll" aria-label="探索候補一覧"></div>
+        </section>
+      </section>
+    </div>
+    <div class="splitter horizontal compare-resizer" id="compareSplitter" role="separator" tabindex="0" aria-label="比較欄の高さ" aria-orientation="horizontal" hidden></div>
+    <section class="compare-dock" id="compareDock" hidden aria-label="履歴の比較">
+      <div class="panel-heading"><h2>比較</h2><span id="compareNames" class="ellipsis"></span><span class="spacer"></span><select id="compareMode" aria-label="比較形式"><option value="structure">構造・値</option><option value="decoded-bytes">バイト（解析範囲を整列）</option><option value="bytes">バイト（絶対オフセット）</option><option value="diagnostic">Diagnostic</option></select><label class="check-label"><input type="checkbox" id="diffOnly" checked>差分のみ</label><button class="icon-button" id="swapCompareButton" title="左右を入替" aria-label="左右を入替">⇄</button><button class="icon-button" id="closeCompareButton" title="比較を閉じる" aria-label="比較を閉じる">×</button></div>
+      <div class="compare-stats" id="compareStats"></div>
+      <div class="compare-labels" id="compareLabels"><span>状態 / パス</span><span>A · 比較元</span><span>B · 比較先</span></div>
+      <div id="compareView" class="compare-view virtual-scroll" tabindex="0"></div>
+    </section>
+  </section>
+</main>
+<footer class="statusbar"><span id="statusMessage" role="status" aria-live="polite">準備完了</span><span class="spacer"></span><span id="scanInfo">1 BYTE / STEP</span><span id="serverState">接続中…</span></footer>
+<div id="contextMenu" class="context-menu" role="menu" hidden></div>
+<div id="toast" class="toast" role="status" hidden></div>
+<div class="drop-overlay" id="dropOverlay" hidden><strong>ファイルをドロップして読み込み</strong><span>.cbor / .bin / .hex / .json / .diag</span></div>
+<input type="file" id="fileInput" hidden>
+<dialog id="helpDialog"><div class="dialog-heading"><h2>操作と探索ルール</h2><button class="icon-button" id="closeHelp" aria-label="閉じる">×</button></div><div class="help-content"><h3>全オフセット探索</h3><p>0 から入力の末尾まで、1バイトずつ開始位置をずらし、各位置から1つのCBOR項目を解析します。Sequenceを有効にすると、エラーになるまで連続する項目の合計で評価します。途中の不正バイトは飛び越えません。</p><p><strong>ヒット数</strong>は、正常に解析できたCBOR要素の数です。配列・マップ・タグ自身、キー、値、ネストした要素、文字列のチャンクを含みます。文字列内の各バイトは要素として数えません。</p><p>ヒット数 → 解析バイト数 → トップレベル要素数 → 小さいオフセットの順で選択します。探索候補をクリックすると、その位置の結果に切り替わり履歴にも保存されます。</p><p class="help-notice">探索は推定です。CBORは短い整数などが偶然一致しやすく、最多ヒットが実際の送信形式とは限りません。登録タグ固有の意味・妥当性までは検証しません。</p><h3>右クリック</h3><p>バイト：HEXのみ・Base64のコピー、選択部分の再解析。要素：値・表示値・パス・HEXのコピー、子要素展開、バイト文字列の中身を再解析。履歴：名前変更、固定、比較A/B、出力、削除。Shift+F10でもメニューを開けます。</p><h3>履歴・比較</h3><p>解析のたびに別の履歴を保存します。2件をチェックして比較。構造・値・エンコード差分、絶対バイト位置での比較、診断表記の並列表示に対応します。履歴はDockerの名前付きボリューム内のSQLiteに保存されます。</p><h3>入力・出力</h3><p>HEX / Base64 はバイナリを復号し、JSON / Diagnostic はCBORへエンコードして解析します。Diagnosticは基本表記（タグ、h'…'、b64'…'、simple、NaN/Infinity、不定長、数値幅）に対応。拡張表記の全機能やdCBORには対応していません。</p><p>JSON出力はバイト列・タグ・大整数などを $bytes / $tag / $integer / $map 等で表現します。元の型を保って再入力するにはDiagnosticを使用してください。JSON入力ではこれらは通常のキーとして扱います。</p><p id="limitHelp"></p><h3>ショートカット</h3><p>Ctrl / ⌘ + Enter：解析　Esc：メニューを閉じる　Shift+クリック：バイト範囲選択。境界線をドラッグするとペイン幅・高さを変更できます。</p></div></dialog>
+</body>
+</html>
