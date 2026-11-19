@@ -174,6 +174,12 @@ class AutoInputAPITests(unittest.TestCase):
         self.assertEqual(response.status_code, 400, response.text)
         self.assertEqual(self.client.get("/api/history").json(), [])
 
+    def test_oversized_byte_literal_is_retained_as_text(self):
+        source = "new Uint8Array([" + "9" * 5000 + "])"
+        record = self.analyze(source)
+        self.assertEqual(record["result"]["input"]["format"], "text")
+        self.assertEqual(record["hex"], source.encode("utf-8").hex())
+
     def test_invalid_format_types_return_400_instead_of_500(self):
         for route in ["/api/analyze", "/api/normalize"]:
             for preferred in [[], {}]:

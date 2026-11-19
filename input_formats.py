@@ -183,7 +183,13 @@ def _array(text: str, base: int) -> dict[str, Any] | None:
     # written in the source. Mixed 0x/decimal arrays therefore remain faithful.
     tokens = [token.strip() for token in body.split(",") if token.strip()]
     if tokens and all(re.fullmatch(r"(?:0[xX][\da-fA-F]+|[+-]?\d+)", token) for token in tokens):
-        values = [int(token, 16 if token.lower().startswith("0x") else 10) for token in tokens]
+        try:
+            values = [int(token, 16 if token.lower().startswith("0x") else 10) for token in tokens]
+        except ValueError:
+            # Oversized decimal literals are not bytes. Retain the original
+            # input through the ordinary fallback, without changing Python's
+            # integer-conversion limit or failing the whole request.
+            return None
         if all(0 <= value <= 255 for value in values):
             return _result(bytes(values), "hex", "バイト配列", start=body_base, end=body_base + len(body))
         return None
