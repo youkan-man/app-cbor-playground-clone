@@ -133,12 +133,12 @@ async def run(args):
             await page.wait_for_function('(n)=>parseInt(document.querySelector("#metricOffset").textContent,16)===n',arg=int(offset))
             await page.locator('.candidate-row').first.click()
             await page.wait_for_function("document.querySelector('#metricOffset').textContent==='0x0000'")
-            # Invalid HEX has a clear error, no history added.
+            # A mismatched format falls back to the original UTF-8 bytes.
             await page.locator('#inputFormat').select_option('hex')
-            await page.locator('#sourceInput').fill('xyz')
+            await page.locator('#sourceInput').fill('未対応の形式です。')
             await page.locator('#analyzeButton').click()
-            await page.wait_for_function("document.querySelector('#statusMessage').classList.contains('error')")
-            assert await page.locator('.history-item').count()==2
+            await page.wait_for_function("document.querySelector('#inputInfo').textContent.includes('UTF-8')")
+            await page.wait_for_function("document.querySelectorAll('.history-item').length===3")
             await page.locator(f'[data-history="{first}"]').click()
             await page.wait_for_function("document.querySelector('#metricOffset').textContent==='0x0004'")
             await page.evaluate("document.querySelector('#toast').hidden=true")

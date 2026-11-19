@@ -222,9 +222,9 @@ def run(args: argparse.Namespace) -> None:
             page.locator('#newButton').click()
             assert page.locator('#analysisGrid').is_visible()
             page.locator('#closeCompareButton').click()
-            page.locator('#sourceInput').fill('zz')
+            page.locator('#sourceInput').fill('未対応の形式です。')
             page.locator('#analyzeButton').click()
-            page.wait_for_function("document.querySelector('#statusMessage').classList.contains('error')")
+            page.wait_for_function("document.querySelector('#inputInfo').textContent.includes('UTF-8')")
             assert page.locator('#analyzeButton').is_enabled()
             page.locator('#inputFormat').select_option('base64')
             page.locator('#sourceInput').fill('ggEC')
@@ -234,7 +234,7 @@ def run(args: argparse.Namespace) -> None:
             page.get_by_role('menuitem', name='CBOR Sequence · 連続した3項目').click()
             page.keyboard.press('Control+Enter')
             page.wait_for_function("document.querySelector('#metricItems').textContent==='3'")
-            checks.append('New analysis restores input; invalid-input recovery; Base64 and Diagnostic sequence keyboard analysis')
+            checks.append('New analysis restores input; unknown-text recovery; Base64 and Diagnostic sequence keyboard analysis')
             assert not errors, errors
             checks.append('No uncaught browser JavaScript errors')
         except Exception:

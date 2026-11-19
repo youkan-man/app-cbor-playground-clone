@@ -14,7 +14,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import Any
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 MAX_DEPTH = 128
 
 
@@ -291,11 +291,63 @@ class Decoder:
         return candidates
 
 
-def analyze(data: bytes, mode: str = "scan", offset: int = 0, sequence: bool = False) -> dict:
+def segment_ranges(size: int, segments: list[dict] | None = None) -> list[tuple[int, int]]:
+    """Ranges in the extracted buffer, with missing source bytes kept as boundaries."""
+    if not segments:
+        return [(0, size)]
+    ranges, end = [], 0
+    for segment in segments:
+        start, stop = segment["start"], segment["end"]
+        if start != end or not start < stop <= size:
+            raise CBORError("入力の連続領域が不正です")
+        ranges.append((start, stop))
+        end = stop
+    if end != size:
+        raise CBORError("入力の連続領域が不足しています")
+    return ranges
+
+
+def analyze(data: bytes, mode: str = "scan", offset: int = 0, sequence: bool = False,
+            segments: list[dict] | None = None) -> dict:
     if not data:
         raise CBORError("入力データが空です")
+    if mode not in ("scan", "exact"):
+        raise CBORError("解析モードが不正です")
     if mode == "exact" and not 0 <= offset < len(data):
         raise CBORError("開始オフセットがデータ範囲外です", offset)
+    ranges = segment_ranges(len(data), segments)
+    if len(ranges) > 1:
+        # Removing an unknown token must never manufacture a valid CBOR object.
+        # Scan every retained byte, but end each attempt at its source boundary.
+        candidates, selected, selected_rank = [], None, None
+        for start, stop in ranges:
+            if mode == "exact" and not start <= offset < stop:
+                continue
+            part = analyze(data[start:stop], mode, offset - start if mode == "exact" else 0, sequence)
+            for candidate in part["candidates"]:
+                candidate["offset"] += start
+                candidate["end"] += start
+                candidate["complete"] = candidate["end"] == len(data)
+                candidate.update(segment_start=start, segment_end=stop)
+            candidates.extend(part["candidates"])
+            detail = part["selected"]
+            detail["offset"] += start
+            detail["end"] += start
+            detail["complete"] = detail["end"] == len(data)
+            detail.update(segment_start=start, segment_end=stop)
+            for row in detail["rows"]:
+                for field in ("start", "end", "header"):
+                    row[field] += start
+            if detail["error"]:
+                detail["error"]["offset"] += start
+            rank = (-detail["hits"], -detail["consumed"], -detail["items"], detail["offset"])
+            if selected is None or rank < selected_rank:
+                selected, selected_rank = detail, rank
+        candidates.sort(key=lambda c: (-c["hits"], -c["consumed"], -c["items"], c["offset"]))
+        return {"version": VERSION, "size": len(data), "mode": mode, "sequence": sequence,
+                "tested": len(data) if mode == "scan" else 1,
+                "candidates": candidates, "best": candidates[0] if candidates else None,
+                "selected": selected}
     decoder = Decoder(data)
     candidates = decoder.candidates(mode, offset, sequence)
     start = candidates[0]["offset"] if candidates else (offset if mode == "exact" else 0)

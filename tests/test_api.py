@@ -89,7 +89,9 @@ class APITests(unittest.TestCase):
         self.assertEqual(r.status_code,201)
 
     def test_bad_requests(self):
-        for value in [[],None,{'text':'xyz'},{'text':'00','offset':-1},{'text':'00','mode':'bad'},{'text':'00','sequence':'false'},{'text':'00','mode':'exact','offset':2}]:
+        for value in [[],None,{'text':''},{'text':[]},{'text':'00','format':'unknown'},
+                      {'text':'00','offset':-1},{'text':'00','mode':'bad'},
+                      {'text':'00','sequence':'false'},{'text':'00','mode':'exact','offset':2}]:
             r=self.client.post('/api/analyze',json=value)
             self.assertEqual(r.status_code,400,r.text)
         self.assertEqual(len(self.client.get('/api/history').json()),0)

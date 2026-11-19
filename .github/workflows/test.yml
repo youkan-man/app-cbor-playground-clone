@@ -1,0 +1,77 @@
+name: Parser, browser and Docker tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          pip install -r requirements-dev.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Test input recognition, offsets, history and restart persistence
+        run: |
+          mkdir -p test-evidence
+          python -m unittest discover -s tests -v 2>&1 | tee test-evidence/unit.log
+          node --check static/app.js
+          node --check static/chrome.js
+
+      - name: Build and start Docker image
+        run: |
+          docker build -t cbor-workbench:test .
+          docker run -d --name cbor-ui --publish 127.0.0.1:8080:8080 cbor-workbench:test
+          python - <<'PY'
+          import time
+          from urllib.request import urlopen
+          for _ in range(60):
+              try:
+                  with urlopen('http://127.0.0.1:8080/api/health', timeout=1) as response:
+                      assert response.status == 200
+                  break
+              except OSError:
+                  time.sleep(0.5)
+          else:
+              raise SystemExit('Docker service did not become ready')
+          PY
+
+      - name: Check browser interactions and layouts over real HTTP
+        run: |
+          python tests/browser_formal.py --url http://127.0.0.1:8080 --output test-evidence/formal 2>&1 | tee test-evidence/formal.log
+          python tests/browser_auto_input.py --url http://127.0.0.1:8080 --output test-evidence/auto-input 2>&1 | tee test-evidence/auto-input.log
+
+      - name: Collect container log
+        if: always()
+        run: |
+          mkdir -p test-evidence
+          docker logs cbor-ui > test-evidence/docker.log 2>&1 || true
+          docker rm -f -v cbor-ui || true
+
+      - name: Save screenshots and test logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cbor-test-evidence
+          path: test-evidence
+          retention-days: 14

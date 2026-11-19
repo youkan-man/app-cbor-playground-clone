@@ -6,7 +6,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && groupadd --gid 10001 cbor \
     && useradd --uid 10001 --gid cbor --no-create-home cbor \
     && mkdir /data && chown cbor:cbor /data
-COPY --chown=cbor:cbor app.py cbor_codec.py ./
+COPY --chown=cbor:cbor app.py cbor_codec.py input_formats.py ./
 COPY --chown=cbor:cbor static ./static
 USER cbor
 EXPOSE 8080

@@ -6,9 +6,9 @@
   <meta name="theme-color" content="#ffffff">
   <title>CBOR Workbench</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='3' fill='%23245a94'/%3E%3Cpath d='m20 9-8 7 8 7M9 9h-3v14h3' fill='none' stroke='white' stroke-width='3'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/static/style.css?v=2">
+  <link rel="stylesheet" href="/static/style.css?v=3">
   <script src="/static/chrome.js?v=2" defer></script>
-  <script src="/static/app.js" type="module"></script>
+  <script src="/static/app.js?v=3" type="module"></script>
 </head>
 <body>
 <header class="app-header">
@@ -41,9 +41,9 @@
     <div class="analysis-grid" id="analysisGrid">
       <section class="source-column" id="sourceColumn" aria-label="入力とバイト表示">
         <section class="source-panel" id="sourcePanel">
-          <div class="panel-heading"><h2>入力</h2><select id="inputFormat" aria-label="入力形式"><option value="hex">HEX</option><option value="base64">Base64</option><option value="diagnostic">Diagnostic</option><option value="json">JSON</option></select><span class="spacer"></span><button id="fileButton">ファイル</button><button id="sampleButton" aria-haspopup="menu">サンプル</button><button id="inputMenuButton" title="コピー・貼り付け・整形・クリア" aria-haspopup="menu">操作 ▾</button></div>
-          <textarea id="sourceInput" spellcheck="false" aria-label="解析するデータ" placeholder="データを貼り付け、またはファイルをドロップ"></textarea>
-          <div class="editor-footer"><span id="inputInfo">HEX · 0 文字</span><span>Ctrl+Enter で解析・履歴保存</span></div>
+          <div class="panel-heading"><h2>入力</h2><select id="inputFormat" aria-label="入力形式" title="通常は自動判定。判別しにくい入力は形式を指定できます"><option value="auto">自動判定</option><option value="hex">HEX</option><option value="base64">Base64</option><option value="diagnostic">Diagnostic</option><option value="json">JSON</option><option value="text">UTF-8</option><option value="binary">バイナリ</option></select><span class="spacer"></span><button id="fileButton">ファイル</button><button id="sampleButton" aria-haspopup="menu">サンプル</button><button id="inputMenuButton" title="コピー・貼り付け・整形・クリア" aria-haspopup="menu">操作 ▾</button></div>
+          <textarea id="sourceInput" spellcheck="false" aria-label="解析するデータ" placeholder="データ・ログ・ダンプを貼り付け、またはファイルをドロップ"></textarea>
+          <div class="editor-footer"><span id="inputInfo">自動判定 · 0 文字</span><span>Ctrl+Enter で解析・履歴保存</span></div>
         </section>
         <div class="splitter horizontal" id="sourceSplitter" role="separator" tabindex="0" aria-label="入力欄の高さ" aria-orientation="horizontal"></div>
         <section class="binary-panel" aria-label="バイト表示">
@@ -82,10 +82,11 @@
 <footer class="statusbar"><span id="statusMessage" role="status" aria-live="polite">準備完了</span><span class="spacer"></span><span id="scanInfo">1バイト刻みで探索</span><span id="serverState">接続中…</span></footer>
 <div id="contextMenu" class="context-menu" role="menu" hidden></div>
 <div id="toast" class="toast" role="status" hidden></div>
-<div class="drop-overlay" id="dropOverlay" hidden><strong>ファイルをドロップして読み込み</strong><span>.cbor / .bin / .hex / .json / .diag</span></div>
+<div class="drop-overlay" id="dropOverlay" hidden><strong>ファイルをドロップして読み込み</strong><span>バイナリ・テキスト・ログ・ダンプ</span></div>
 <input type="file" id="fileInput" hidden>
 <dialog id="helpDialog"><div class="dialog-heading"><h2>操作と探索ルール</h2><button class="icon-button" id="closeHelp" aria-label="閉じる">×</button></div><div class="help-content">
-<h3>解析</h3><p>データを入力して「解析する」、または Ctrl+Enter。解析ごとに履歴へ保存します。HEX / Base64 は復号し、JSON / Diagnostic はCBORへ変換して解析します。</p>
+<h3>解析</h3><p>データを入力して「解析する」、または Ctrl+Enter。解析ごとに履歴へ保存します。初期設定は「自動判定」です。HEX / Base64、JSON / Diagnostic、オフセット・ASCII列付きダンプ、ログから入力を読み取ります。形式を指定した場合も、読み取れなければ別の形式を試します。判別できないテキストはUTF-8のバイト列として解析します。</p>
+<p>欠けたバイトや読めない箇所の前後は別領域として解析し、推測でバイトを補いません。境界はバイト表示の縦線、入力の判定結果と注意事項は画面内に表示します。オフセットは抽出後のバイト列内の位置です。元の入力も履歴に保存します。</p>
 <h3>全オフセット探索</h3><p>0から入力の末尾まで1バイトずつ開始位置をずらし、各位置から1つのCBOR項目を解析します。「連続項目」を有効にすると、エラーになるまで連続する項目をまとめて評価します。途中の不正バイトは飛び越えません。</p><p>ヒット数は正常に解析できたCBOR要素の数です。配列・マップ・タグ自身、キー、値、ネストした要素、文字列のチャンクを含みます。文字列内の各バイトは数えません。ヒット数 → 解析バイト数 → トップレベル項目数 → 小さいオフセットの順で選択します。</p><p>候補をクリックすると、その位置の結果に切り替わり、選択状態も履歴に保存します。開始位置を指定するには「全オフセット探索」をオフにします。</p><p class="help-notice">探索は推定です。短い整数などは偶然一致しやすく、最多ヒットが実際の送信形式とは限りません。登録タグ固有の意味・妥当性までは検証しません。</p>
 <h3>要素・バイトの操作</h3><p>要素を選択すると対応バイトを強調します。バイトから対応要素を選ぶこともできます。右クリック、Shift+F10、または「操作」「要素操作」「履歴の ⋯ 」で同じメニューを開けます。値・表示値・パス・HEXのコピーや、選択部分・バイト文字列の中身の再解析ができます。</p>
 <h3>履歴比較と画面配置</h3><p>履歴の2件をチェックして「比較する」。構造・値・符号化、バイト、Diagnosticを比較できます。「比較を拡大」で比較専用の表示に切り替え、「解析と併記」で戻します。履歴のダブルクリックで固定、右クリックで名前変更や削除ができます。</p><p>ペインの境界をドラッグすると幅・高さを変更できます。境界をダブルクリックするとその境界だけ初期化、「配置を戻す」で全体を初期化します。境界にフォーカスして矢印キーでも調整できます。</p>

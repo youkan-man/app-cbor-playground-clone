@@ -16,11 +16,12 @@ from typing import Any
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse as StarletteJSONResponse, Response
 from starlette.routing import Route, Mount
 from starlette.staticfiles import StaticFiles
 
-from cbor_codec import CBORError, Decoder, VERSION, analyze, decode_input
+from cbor_codec import CBORError, Decoder, VERSION, analyze, segment_ranges
+from input_formats import parse_input
 
 LOG = logging.getLogger("cbor")
 ROOT = Path(__file__).resolve().parent
@@ -28,8 +29,42 @@ MAX_BYTES = int(os.environ.get("CBOR_MAX_BYTES", "262144"))
 MAX_BODY = MAX_BYTES * 12 + 4096
 
 
+class JSONResponse(StarletteJSONResponse):
+    def render(self, content: Any) -> bytes:
+        # JSON can carry lone UTF-16 code units from a pasted browser string.
+        # Escaping preserves them without an encoding failure in the response.
+        return json.dumps(content, ensure_ascii=True, allow_nan=False, separators=(",", ":")).encode("utf-8")
+
+
+def stored_text(value: str) -> str | bytes:
+    try:
+        value.encode("utf-8")
+        return value
+    except UnicodeEncodeError:
+        # SQLite TEXT requires UTF-8. Its BLOB storage preserves this uncommon
+        # input exactly while keeping existing ordinary TEXT rows compatible.
+        return value.encode("utf-8", errors="surrogatepass")
+
+
+def restored_text(value: str | bytes) -> str:
+    return value.decode("utf-8", errors="surrogatepass") if isinstance(value, bytes) else value
+
+
+def normalize_input(payload: dict) -> tuple[bytes, dict]:
+    text, fmt = payload.get("text", ""), payload.get("format", "auto")
+    if not isinstance(text, str):
+        raise CBORError("入力は文字列で指定してください")
+    parsed = parse_input(text, fmt)
+    raw = parsed["data"]
+    if len(raw) > MAX_BYTES:
+        raise CBORError(f"入力上限は {MAX_BYTES:,} バイトです。CBOR_MAX_BYTES で変更できます")
+    metadata = {key: value for key, value in parsed.items() if key != "data"}
+    metadata.update(requested_format=fmt, source_length=len(text), size=len(raw))
+    return raw, metadata
+
+
 def json_pack(value: Any) -> bytes:
-    return zlib.compress(json.dumps(value, ensure_ascii=False, allow_nan=False).encode(), 6)
+    return zlib.compress(json.dumps(value, ensure_ascii=True, allow_nan=False).encode(), 6)
 
 
 def json_unpack(value: bytes) -> Any:
@@ -57,35 +92,38 @@ class Store:
     def list(self) -> list[dict]:
         with self.connect() as db:
             rows = db.execute("SELECT id,title,created,pinned,format,mode,summary FROM history ORDER BY pinned DESC,created DESC").fetchall()
-        return [{**{k: r[k] for k in ("id", "title", "created", "pinned", "format", "mode")}, **json.loads(r["summary"])} for r in rows]
+        return [{**{k: restored_text(r[k]) if isinstance(r[k], bytes) else r[k]
+                    for k in ("id", "title", "created", "pinned", "format", "mode")},
+                 **json.loads(r["summary"])} for r in rows]
 
     @staticmethod
     def summary(result: dict) -> str:
         s = result["selected"]
-        return json.dumps({"size": result["size"], "offset": s["offset"], "hits": s["hits"], "consumed": s["consumed"], "items": s["items"]})
+        return json.dumps({"size": result["size"], "offset": s["offset"], "hits": s["hits"],
+                           "consumed": s["consumed"], "items": s["items"],
+                           "detected_format": result.get("input", {}).get("format"),
+                           "input_label": result.get("input", {}).get("label")})
 
     def save(self, payload: dict) -> dict:
-        fmt, mode = payload.get("format", "hex"), payload.get("mode", "scan")
+        fmt, mode = payload.get("format", "auto"), payload.get("mode", "scan")
         text = payload.get("text", "")
         offset = parse_offset(payload.get("offset", 0))
         title = str(payload.get("title", "")).strip()[:180]
-        if not isinstance(text, str):
-            raise CBORError("入力は文字列で指定してください")
-        raw = decode_input(text, fmt)
-        if len(raw) > MAX_BYTES:
-            raise CBORError(f"入力上限は {MAX_BYTES:,} バイトです。CBOR_MAX_BYTES で変更できます")
         started = time.perf_counter()
+        raw, input_info = normalize_input(payload)
         sequence = payload.get("sequence", False)
         if not isinstance(sequence, bool):
             raise CBORError("sequence は真偽値で指定してください")
-        result = analyze(raw, mode, offset, sequence)
+        result = analyze(raw, mode, offset, sequence, input_info.get("segments"))
+        result["input"] = input_info
         result["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 2)
         now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         identifier = uuid.uuid4().hex
         title = title or f"解析 · {now[11:19]} · {len(raw)} B"
         with self.connect() as db:
             db.execute("INSERT INTO history(id,title,created,source,format,mode,requested_offset,data,result,summary) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                       (identifier, title, now, text, fmt, mode, offset, raw, json_pack(result), self.summary(result)))
+                       (identifier, stored_text(title), now, stored_text(text), fmt, mode, offset, raw,
+                        json_pack(result), self.summary(result)))
         return self.get(identifier)
 
     def get(self, identifier: str) -> dict:
@@ -94,6 +132,7 @@ class Store:
         if row is None:
             raise LookupError("履歴が見つかりません")
         result = {k: row[k] for k in ("id", "title", "created", "pinned", "source", "format", "mode", "requested_offset")}
+        result["source"], result["title"] = restored_text(row["source"]), restored_text(row["title"])
         result["hex"] = row["data"].hex()
         result["result"] = json_unpack(row["result"])
         return result
@@ -104,7 +143,7 @@ class Store:
                 title = str(payload["title"]).strip()[:180]
                 if not title:
                     raise CBORError("履歴名を入力してください")
-                db.execute("UPDATE history SET title=? WHERE id=?", (title, identifier))
+                db.execute("UPDATE history SET title=? WHERE id=?", (stored_text(title), identifier))
             if "pinned" in payload:
                 if not isinstance(payload["pinned"], bool):
                     raise CBORError("pinned は真偽値で指定してください")
@@ -113,8 +152,9 @@ class Store:
 
     def select(self, identifier: str, offset: int) -> dict:
         record = self.get(identifier)
-        selected = Decoder(bytes.fromhex(record["hex"])).detail(offset, record["result"].get("sequence", False))
         result = record["result"]
+        selected = analyze(bytes.fromhex(record["hex"]), "exact", offset,
+                           result.get("sequence", False), result.get("input", {}).get("segments"))["selected"]
         result["selected"] = selected
         with self.connect() as db:
             db.execute("UPDATE history SET result=?,summary=? WHERE id=?", (json_pack(result), self.summary(result), identifier))
@@ -223,7 +263,7 @@ def create_app(data_dir: str | Path | None = None):
         return FileResponse(ROOT / "static" / "index.html")
 
     async def health(request):
-        return JSONResponse({"status": "ok", "version": VERSION, "max_bytes": MAX_BYTES})
+        return JSONResponse({"status": "ok", "version": VERSION, "max_bytes": MAX_BYTES, "max_body": MAX_BODY})
 
     async def history(request):
         return JSONResponse(await run_in_threadpool(store.list))
@@ -231,6 +271,10 @@ def create_app(data_dir: str | Path | None = None):
     async def run_analysis(request):
         value = await payload(request)
         return JSONResponse(await run_in_threadpool(store.save, value), status_code=201)
+
+    async def normalize(request):
+        raw, input_info = await run_in_threadpool(normalize_input, await payload(request))
+        return JSONResponse({"hex": raw.hex(), "input": input_info})
 
     async def entry(request):
         identifier = request.path_params["id"]
@@ -261,8 +305,14 @@ def create_app(data_dir: str | Path | None = None):
         record = await run_in_threadpool(store.get, request.path_params["id"])
         offset = parse_offset(request.query_params.get("offset", "0"))
         def inspect():
-            decoder = Decoder(bytes.fromhex(record["hex"]))
-            node = decoder.nodes.get(offset)
+            raw = bytes.fromhex(record["hex"])
+            ranges = segment_ranges(len(raw), record["result"].get("input", {}).get("segments"))
+            bounds = next(((a, b) for a, b in ranges if a <= offset < b), None)
+            if bounds is None:
+                raise CBORError("開始オフセットがデータ範囲外です", offset)
+            start, stop = bounds
+            decoder = Decoder(raw[start:stop])
+            node = decoder.nodes.get(offset - start)
             if node is None:
                 raise CBORError("この位置に有効な CBOR 要素はありません", offset)
             return {"diagnostic": decoder.diagnostic(node, True), "json": decoder.json_value(node),
@@ -279,7 +329,7 @@ def create_app(data_dir: str | Path | None = None):
         elif fmt == "diagnostic":
             body, mime, suffix = record["result"]["selected"]["diagnostic"], "text/plain; charset=utf-8", ".diag"
         else:
-            body, mime, suffix = json.dumps(record, ensure_ascii=False, indent=2), "application/json", ".json"
+            body, mime, suffix = json.dumps(record, ensure_ascii=True, indent=2), "application/json", ".json"
         return Response(body, media_type=mime, headers={"Content-Disposition": f'attachment; filename="cbor-{identifier}{suffix}"'})
 
     async def known_error(request, exc):
@@ -288,6 +338,7 @@ def create_app(data_dir: str | Path | None = None):
 
     routes = [Route("/", home), Route("/api/health", health), Route("/api/history", history),
               Route("/api/analyze", run_analysis, methods=["POST"]),
+              Route("/api/normalize", normalize, methods=["POST"]),
               Route("/api/compare", comparison, methods=["POST"]),
               Route("/api/history/{id}/candidate", candidate, methods=["POST"]),
               Route("/api/history/{id}/node", node_info), Route("/api/history/{id}/export", export),

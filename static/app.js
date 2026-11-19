@@ -2,11 +2,12 @@ const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const hexOffset = (n) => `0x${Number(n).toString(16).toUpperCase().padStart(4, '0')}`;
 const formatBytes = (n) => Number(n).toLocaleString();
+const formatLabels = {auto:'自動判定',hex:'HEX',base64:'Base64',diagnostic:'Diagnostic',json:'JSON',text:'UTF-8',binary:'バイナリ'};
 const storeLocal = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 const readLocal = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const state = {history: [], active: null, bytes: [], selected: new Set(), comparison: null, view: 'tree',
   range: null, anchor: 0, cursor: 0, node: null, collapsed: new Set(), visibleRows: [], drag: false,
-  busy: false, request: 0, menuReturn: null, maxBytes: 262144, dirty: false};
+  busy: false, request: 0, menuReturn: null, maxBytes: 262144, maxBody: 3149824, dirty: false, segmentStarts: new Set()};
 const sampleJson = JSON.stringify({device: 'sensor-01', seq: 42, status: 'online', readings: {temperature: 23.75, voltage: 3.3, current: 0.125}, channels: [120,118,121,119], enabled: true}, null, 2);
 const sampleHex = 'ff1cff1ca6666465766963656973656e736f722d303163736571182a66737461747573666f6e6c696e656872656164696e6773a36b74656d7065726174757265f94df067766f6c74616765fb400a6666666666666763757272656e74f93000686368616e6e656c7384187818761879187767656e61626c6564f5ffff';
 
@@ -98,7 +99,8 @@ const hexList = new VirtualList($('hexView'), 24, (_, index) => {
     const active = state.range && i>=state.range[0] && i<state.range[1];
     const parsed = selected && i>=selected.offset && i<selected.end;
     const header = active && state.node && i>=state.node.start && i<state.node.header;
-    bytes += `<span class="hex-byte${parsed?' parsed':''}${active?' selected':''}${header?' header':''}" data-byte="${i}">${state.bytes[i].toUpperCase()}</span>`;
+    const boundary = state.segmentStarts.has(i);
+    bytes += `<span class="hex-byte${parsed?' parsed':''}${active?' selected':''}${header?' header':''}${boundary?' segment-start':''}" data-byte="${i}"${boundary?' title="別領域の先頭（直前の領域とは接続せず解析）"':''}>${state.bytes[i].toUpperCase()}</span>`;
   }
   const ascii = state.bytes.slice(start,start+16).map(v => {const n=parseInt(v,16); return n>=32 && n<127 ? String.fromCharCode(n) : '·';}).join('');
   return `<div class="hex-row"><span class="hex-offset">${start.toString(16).toUpperCase().padStart(8,'0')}</span><span class="hex-bytes">${bytes}</span><span class="hex-ascii">${escape(ascii)}</span></div>`;
@@ -131,7 +133,7 @@ const compareList = new VirtualList($('compareView'), 26, row => {
 
 function renderHistory() {
   const query = $('historySearch').value.toLowerCase();
-  const history = state.history.filter(r => `${r.title} ${r.format} ${r.size} ${r.hits}`.toLowerCase().includes(query));
+  const history = state.history.filter(r => `${r.title} ${r.format} ${r.detected_format || ''} ${r.input_label || ''} ${r.size} ${r.hits}`.toLowerCase().includes(query));
   $('historyCount').textContent = state.history.length;
   $('historyList').innerHTML = history.length ? history.map(r => {
     const date = new Date(r.created);
@@ -139,7 +141,7 @@ function renderHistory() {
     const day = date.toLocaleDateString('ja-JP',{month:'2-digit',day:'2-digit'});
     return `<div class="history-item${state.active?.id===r.id?' active':''}${state.selected.has(r.id)?' checked':''}" data-history="${r.id}" tabindex="0" title="${escape(r.title)} · ${escape(date.toLocaleString())}">
       <input type="checkbox" data-check="${r.id}" aria-label="${escape(r.title)}を比較に選択" ${state.selected.has(r.id)?'checked':''}>
-      <div><div class="history-title">${r.pinned?'<span class="pin-mark">◆</span>':''}<strong>${escape(r.title)}</strong></div><div class="history-meta"><span>${day} ${time}</span><span>${formatBytes(r.size)} B</span></div><div class="history-meta"><span>${r.format.toUpperCase()} · ${hexOffset(r.offset)}</span><span class="hit">${r.hits} hits</span></div></div></div>`;
+      <div><div class="history-title">${r.pinned?'<span class="pin-mark">◆</span>':''}<strong>${escape(r.title)}</strong></div><div class="history-meta"><span>${day} ${time}</span><span>${formatBytes(r.size)} B</span></div><div class="history-meta"><span title="${escape(r.input_label || '')}">${escape(r.detected_format ? formatLabels[r.detected_format] || r.detected_format : formatLabels[r.format] || r.format)} · ${hexOffset(r.offset)}</span><span class="hit">${r.hits} hits</span></div></div></div>`;
   }).join('') : `<div class="history-empty">${query?'一致する履歴はありません':'解析結果はここに保存されます。'}</div>`;
   $('compareButton').disabled = state.selected.size !== 2;
   $('compareHint').textContent = state.selected.size ? `${state.selected.size} 件選択` : '2件選択して比較';
@@ -172,16 +174,30 @@ function markDirty() {
 }
 function updateInputInfo() {
   const text = $('sourceInput').value;
-  $('inputInfo').textContent = `${$('inputFormat').selectedOptions[0].text} · ${formatBytes(text.length)} 文字${state.dirty?' · 未解析':''}`;
+  const selected = $('inputFormat').selectedOptions[0]?.text || '自動判定';
+  const detected = !state.dirty && state.active?.result.input;
+  const label = detected && (detected.label || formatLabels[detected.format] || detected.format);
+  const format = detected ? `${selected === label ? selected : `${selected} → ${label}`}${detected.segments?.length>1?' · 分断あり':''}` : selected;
+  const info = `${format} · ${formatBytes(text.length)} 文字${state.dirty?' · 未解析':''}`;
+  $('inputInfo').textContent = info;
+  $('inputInfo').title = info;
   storeLocal('cbor.draft', JSON.stringify({text,format:$('inputFormat').value,title:$('analysisTitle').value,scan:$('scanToggle').checked,sequence:$('sequenceToggle').checked,offset:$('manualOffset').value}));
 }
-function setSource(text, format = 'hex', title = '', {scan=true, sequence=false, offset=0} = {}) {
+function setSource(text, format = 'auto', title = '', {scan=true, sequence=false, offset=0} = {}) {
   $('sourceInput').value = text; $('sourceInput').scrollTop = 0; $('inputFormat').value = format; $('analysisTitle').value = title;
+  if (!$('inputFormat').value) $('inputFormat').value = 'auto';
   $('scanToggle').checked = scan; $('sequenceToggle').checked = sequence; $('manualOffset').value = offset;
   $('manualOffset').disabled = scan; markDirty();
 }
+function showEmptyResult(noMatch = false) {
+  $('emptyResult').querySelector('strong').textContent = noMatch ? '解析できるCBORが見つかりません' : '入力データを解析してください';
+  $('emptyResult').querySelector('p').textContent = noMatch ? '入力データを履歴に保存しました' : '開始位置を1バイトずつ探索し、最も多くの要素を解析できた結果を表示します。';
+  $('emptySampleButton').hidden = noMatch;
+  $('emptyResult').hidden = false;
+}
 function setRecord(record, updateInput = true) {
   state.active = record; state.bytes = record.hex.match(/../g) || [];
+  state.segmentStarts = new Set((record.result.input?.segments || []).slice(1).map(segment=>segment.start));
   state.range = null; state.node = null; state.collapsed.clear();
   if (updateInput) {
     setSource(record.source, record.format, record.title, {scan:record.mode==='scan', sequence:!!record.result.sequence, offset:record.requested_offset});
@@ -199,9 +215,10 @@ function setRecord(record, updateInput = true) {
   $('treeCount').textContent = `${s.rows.length} 要素`;
   $('candidateCount').textContent = record.result.candidates.length;
   $('exportButton').disabled = false;
-  $('emptyResult').hidden = true;
+  if (s.hits) $('emptyResult').hidden = true;
+  else showEmptyResult(true);
   $('scanInfo').textContent = `${formatBytes(record.result.tested)} OFFSET${record.result.tested!==1?'S':''} · ${record.result.elapsed_ms} ms`;
-  const warnings = [];
+  const warnings = [...(record.result.input?.warnings || [])];
   if (s.offset) warnings.push(`先頭 ${s.offset} B は対象外`);
   if (s.end < record.result.size) warnings.push(`末尾 ${record.result.size-s.end} B は未解析`);
   if (s.error) warnings.push(`@${hexOffset(s.error.offset)}: ${s.error.message}`);
@@ -250,11 +267,11 @@ async function chooseCandidate(offset) {
   status(`${hexOffset(offset)} の解析結果を表示 · 選択候補を履歴に保存しました`);
 }
 function newAnalysis() {
-  ++state.request; state.active=null; state.bytes=[];state.range=null;state.node=null;state.collapsed.clear();state.dirty=false;
-  setSource('','hex',''); hexList.set([]);treeList.set([]);candidateList.set([]);
+  ++state.request; state.active=null; state.bytes=[];state.range=null;state.node=null;state.collapsed.clear();state.dirty=false;state.segmentStarts.clear();
+  setSource('','auto',''); hexList.set([]);treeList.set([]);candidateList.set([]);
   for (const id of ['metricOffset','metricHits','metricBytes','metricItems','byteCount']) $(id).textContent='—';
   $('resultState').textContent='未解析';$('resultState').classList.remove('good');$('candidateCount').textContent='0';
-  $('treeCount').textContent='0 要素';$('textResult').textContent='';$('emptyResult').hidden=false;$('parseWarning').hidden=true;
+  $('treeCount').textContent='0 要素';$('textResult').textContent='';showEmptyResult();$('parseWarning').hidden=true;
   $('exportButton').disabled=true;renderHistory();updateSelectionInfo();$('sourceInput').focus();status('新しい解析');
 }
 
@@ -290,7 +307,8 @@ function renderView() {
   treeList.render();
 }
 function updateSelectionInfo() {
-  $('selectionInfo').textContent=state.range?`${hexOffset(state.range[0])}–${hexOffset(state.range[1]-1)} · ${state.range[1]-state.range[0]} B`:'選択なし';
+  const sections = state.range ? (state.active?.result.input?.segments || []).filter(segment=>segment.start<state.range[1] && segment.end>state.range[0]).length : 0;
+  $('selectionInfo').textContent=state.range?`${hexOffset(state.range[0])}–${hexOffset(state.range[1]-1)} · ${state.range[1]-state.range[0]} B${sections>1?` · ${sections}領域`:''}`:'選択なし';
 }
 function highlightNode(row, scroll=true) {
   state.node=row; state.range=[row.start,row.end];state.anchor=row.start;
@@ -376,8 +394,19 @@ function menu(event, heading, actions) {
   el.querySelector('button:not(:disabled)')?.focus();
 }
 async function nodeData(row) {return api(`/api/history/${state.active.id}/node?offset=${row.start}`);}
+function formattedHex(hex) {
+  return (hex.match(/.{1,32}/g)||[]).map(line=>(line.match(/../g)||[]).join(' ').toUpperCase()).join('\n');
+}
 async function extract(hex,title,options={}) {
-  setSource(hex.match(/.{1,32}/g)?.join('\n')||hex,'hex',title,options);await runAnalysis();
+  setSource(formattedHex(hex),'hex',title,options);await runAnalysis();
+}
+async function extractRange(record,start,end,title,options={}) {
+  const segments = record.result.input?.segments || [{start:0,end:record.hex.length/2}];
+  const parts = segments.filter(segment=>segment.start<end && segment.end>start)
+    .map(segment=>formattedHex(record.hex.slice(Math.max(start,segment.start)*2,Math.min(end,segment.end)*2)));
+  // Keep missing bytes missing. Reanalysis must not manufacture a CBOR value
+  // by joining fragments which were separated in the original input.
+  setSource(parts.join('\n??\n'),'hex',title,options);await runAnalysis();
 }
 function nodeMenu(event,row) {
   highlightNode(row);
@@ -390,7 +419,7 @@ function nodeMenu(event,row) {
     {label:'要素の HEX のみコピー',run:()=>copy(hexText(row.start,row.end))},null,
     {label:'この要素を新しく解析',run:()=>extract(record.hex.slice(row.start*2,row.end*2),`${record.title} / ${row.label}`)},
     {label:'バイト文字列の中身を解析',disabled:row.type!=='bytes',run:async()=>extract((await nodeData(row)).payload,`${record.title} / payload`)},
-    {label:'この位置から解析',run:()=>extract(record.hex,`${record.title} / @${hexOffset(row.start)}`,{scan:false,offset:row.start,sequence:record.result.sequence})},null,
+    {label:'この位置から解析',run:()=>extractRange(record,0,record.hex.length/2,`${record.title} / @${hexOffset(row.start)}`,{scan:false,offset:row.start,sequence:record.result.sequence})},null,
     {label:state.collapsed.has(row.id)?'子要素を展開':'子要素を折りたたむ',disabled:!row.children,run:()=>{state.collapsed.has(row.id)?state.collapsed.delete(row.id):state.collapsed.add(row.id);renderTree();}}
   ]);
 }
@@ -402,8 +431,8 @@ function hexMenu(event) {
     {label:'HEX のみコピー',disabled:!data,run:()=>copy(selectedHex())},
     {label:'HEX のみコピー（区切りなし）',disabled:!data,run:()=>copy(data)},
     {label:'Base64 をコピー',disabled:!data,run:()=>copy(base64FromHex(data))},null,
-    {label:'選択範囲を新しく解析',disabled:!range,run:()=>extract(data,`${record.title} / ${hexOffset(range[0])}`)},
-    {label:'この位置から解析',disabled:!range,run:()=>extract(record.hex,`${record.title} / @${hexOffset(range[0])}`,{scan:false,offset:range[0],sequence:record.result.sequence})},
+    {label:'選択範囲を新しく解析',disabled:!range,run:()=>extractRange(record,range[0],range[1],`${record.title} / ${hexOffset(range[0])}`)},
+    {label:'この位置から解析',disabled:!range,run:()=>extractRange(record,0,record.hex.length/2,`${record.title} / @${hexOffset(range[0])}`,{scan:false,offset:range[0],sequence:record.result.sequence})},
     {label:'対応する要素を表示',disabled:!state.node,run:()=>{state.view='tree';renderView();treeList.scrollTo(state.visibleRows.findIndex(r=>r.id===state.node.id));}},null,
     {label:'すべて選択',disabled:!state.bytes.length,shortcut:'Ctrl+A',run:()=>{state.range=[0,state.bytes.length];hexList.render();updateSelectionInfo();}},
     {label:'選択を解除',disabled:!range,run:()=>{state.range=null;state.node=null;hexList.render();treeList.render();updateSelectionInfo();}}
@@ -436,7 +465,16 @@ function inputMenu(event) {
     {label:'すべてコピー',disabled:!input.value,run:()=>copy(input.value)},
     {label:'貼り付け',shortcut:'Ctrl+V',run:async()=>{try {const text=await navigator.clipboard.readText();input.setRangeText(text,input.selectionStart,input.selectionEnd,'end');markDirty();}catch{input.focus();toast('Ctrl+V / 長押しで貼り付けてください（HTTPでは直接貼付APIが使えない場合があります）');}}},
     {label:'すべて選択',shortcut:'Ctrl+A',run:()=>{input.focus();input.select();}},null,
-    {label:'HEX を整形（16 B / 行）',disabled:$('inputFormat').value!=='hex',run:()=>{const raw=input.value.replace(/0x/gi,'').replace(/[\s,:_-]/g,'');if(!/^(?:[0-9a-fA-F]{2})*$/.test(raw))throw new Error('不正な HEX です');input.value=(raw.match(/.{1,32}/g)||[]).map(line=>(line.match(/../g)||[]).join(' ').toUpperCase()).join('\n');markDirty();}},
+    {label:'HEX を整形（16 B / 行）',disabled:!input.value,run:async()=>{
+      const source=input.value,format=$('inputFormat').value;
+      const result=await api('/api/normalize',{text:source,format});
+      if(input.value!==source || $('inputFormat').value!==format)return;
+      if(result.input?.warnings?.length || result.input?.segments?.length>1){
+        const message='補正が必要な入力です。元の入力を保持しました。そのまま解析できます。';
+        status(message);toast(message);return;
+      }
+      input.value=formattedHex(result.hex);$('inputFormat').value='hex';markDirty();
+    }},
     {label:'入力をクリア',run:()=>{input.value='';markDirty();input.focus();}}
   ]);
 }
@@ -451,15 +489,25 @@ function sampleMenu(event) {
 
 async function openFile(file) {
   if(!file)return;
-  if(file.size>state.maxBytes*8)throw new Error('ファイルが大きすぎます');
+  if(file.size>state.maxBody)throw new Error(`読込上限は ${formatBytes(state.maxBody)} B です`);
+  const data=new Uint8Array(await file.arrayBuffer());
   const ext=file.name.split('.').pop().toLowerCase();
-  const formats={json:'json',diag:'diagnostic',edn:'diagnostic',hex:'hex',txt:'hex',b64:'base64',base64:'base64'};
-  if(formats[ext])setSource(await file.text(),formats[ext],file.name);
+  const binaryHint=['cbor','bin'].includes(ext);
+  let text=null;
+  if(!binaryHint){
+    const encoding=data[0]===0xff && data[1]===0xfe?'utf-16le':data[0]===0xfe && data[1]===0xff?'utf-16be':'utf-8';
+    try {
+      // Never replace invalid byte sequences: they belong in the binary view.
+      const decoded=new TextDecoder(encoding,{fatal:true,ignoreBOM:true}).decode(data);
+      const visible=decoded.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g,'');
+      if(!/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(visible))text=decoded;
+    } catch {}
+  }
+  if(text!==null)setSource(text,'auto',file.name);
   else {
     if(file.size>state.maxBytes)throw new Error(`入力上限は ${formatBytes(state.maxBytes)} B です`);
-    const data=new Uint8Array(await file.arrayBuffer());
     const hex=Array.from(data,b=>b.toString(16).padStart(2,'0')).join('');
-    setSource((hex.match(/.{1,32}/g)||[]).join('\n'),'hex',file.name);
+    setSource(formattedHex(hex),'binary',file.name);
   }
   status(`${file.name} を読み込みました。解析ボタンで実行します`);
 }
@@ -490,7 +538,7 @@ $('scanToggle').addEventListener('change',()=>{$('manualOffset').disabled=$('sca
 $('sequenceToggle').addEventListener('change',markDirty);$('manualOffset').addEventListener('input',markDirty);
 $('sourceInput').addEventListener('contextmenu',inputMenu);
 $('sampleButton').addEventListener('click',sampleMenu);
-$('emptySampleButton').addEventListener('click',safely(async()=>{setSource((sampleHex.match(/.{1,32}/g)||[]).join('\n'),'hex','Framed telemetry');await runAnalysis();}));
+$('emptySampleButton').addEventListener('click',safely(async()=>{setSource((sampleHex.match(/.{1,32}/g)||[]).join('\n'),'auto','Framed telemetry');await runAnalysis();}));
 $('fileButton').addEventListener('click',()=>$('fileInput').click());
 $('fileInput').addEventListener('change',safely(async e=>{await openFile(e.target.files[0]);e.target.value='';}));
 $('historySearch').addEventListener('input',renderHistory);
@@ -574,13 +622,13 @@ new ResizeObserver(()=>{const grid=$('analysisGrid'),w=parseFloat(document.docum
 
 await safely(async()=>{
   const theme=readLocal('cbor.theme');if(theme==='light'||theme==='dark')document.documentElement.dataset.theme=theme;
-  const health=await api('/api/health');state.maxBytes=health.max_bytes;
+  const health=await api('/api/health');state.maxBytes=health.max_bytes;state.maxBody=health.max_body || state.maxBytes*12+4096;
   $('serverState').textContent='SQLite · 接続済み';
   $('limitHelp').textContent=`入力上限 ${formatBytes(state.maxBytes)} B（CBOR_MAX_BYTESで設定）。ネスト128段。上限を超えた項目は明示的にエラー表示されます。履歴はこのサーバーの利用者間で共有されます。`;
   await refreshHistory();
   let draft;try{draft=JSON.parse(readLocal('cbor.draft')||'null');}catch{}
   if(state.history.length)await loadRecord(state.history[0].id);
   else if(draft?.text)setSource(draft.text,draft.format,draft.title,{scan:draft.scan,sequence:draft.sequence,offset:draft.offset});
-  else setSource((sampleHex.match(/.{1,32}/g)||[]).join('\n'),'hex','Framed telemetry');
+  else setSource((sampleHex.match(/.{1,32}/g)||[]).join('\n'),'auto','Framed telemetry');
   status('準備完了 · 入力、またはサンプルを解析してください');
 })();
