@@ -17,7 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -28,6 +28,7 @@ def run(args: argparse.Namespace) -> None:
     output.mkdir(parents=True, exist_ok=True)
     checks: list[str] = []
     errors: list[str] = []
+    expect.set_options(timeout=10000)
     with tempfile.TemporaryDirectory() as directory, sync_playwright() as pw:
         browser = pw.chromium.launch(executable_path=args.chromium, headless=True, args=['--no-sandbox'])
         page = browser.new_page(viewport={'width': 1440, 'height': 960}, device_scale_factor=1)
@@ -66,7 +67,7 @@ def run(args: argparse.Namespace) -> None:
                 page.add_script_tag(content=(ROOT / 'static/app.js').read_text(), type='module')
             else:
                 page.goto(args.url)
-            page.wait_for_function("document.querySelector('#serverState').textContent.includes('接続済み')")
+            expect(page.locator('#serverState')).to_contain_text('接続済み')
             if args.in_process:
                 assert page.evaluate("localStorage.getItem('cbor.theme')") == 'light'
                 assert page.evaluate("localStorage.getItem('cbor.--source-width')") == ''
@@ -76,19 +77,19 @@ def run(args: argparse.Namespace) -> None:
             assert page.locator('#sourceInput').evaluate('(el)=>getComputedStyle(el).backgroundColor') == 'rgb(255, 255, 255)'
             checks.append('White input and light initial theme')
             page.evaluate("""() => Object.defineProperty(navigator,'clipboard',{configurable:true,value:{
-                writeText:async text=>{window.__lastCopy=text;},readText:async ()=>'820102'}})""")
+                writeText:async text=>{window.__lastCopy=text;document.body.dataset.lastCopy=String(text);},readText:async ()=>'820102'}})""")
             page.locator('#newButton').click()
             page.locator('#sampleButton').click()
             page.get_by_role('menuitem', name='ヘッダー + CBOR + ノイズ · HEX').click()
             page.locator('#analysisTitle').fill('Telemetry A / 送信データ')
             page.locator('#inputMenuButton').click()
             page.get_by_role('menuitem', name='HEX を整形（16 B / 行）').click()
-            assert re.fullmatch(r'[0-9A-F ]+(\n[0-9A-F ]+)*', page.locator('#sourceInput').input_value())
+            expect(page.locator('#sourceInput')).to_have_value(re.compile(r'^[0-9A-F ]+(\n[0-9A-F ]+)*$'))
             page.locator('#analyzeButton').click()
-            page.wait_for_function("document.querySelector('#metricOffset').textContent==='0x0004'")
-            assert page.locator('#metricHits').inner_text() == '23'
-            assert page.locator('#metricBytes').inner_text() == '118 B'
-            page.wait_for_function("document.querySelectorAll('.history-item').length===1")
+            expect(page.locator('#metricOffset')).to_have_text('0x0004')
+            expect(page.locator('#metricHits')).to_have_text('23')
+            expect(page.locator('#metricBytes')).to_have_text('118 B')
+            expect(page.locator('.history-item')).to_have_count(1)
             first = page.locator('.history-item').get_attribute('data-history')
             checks.append('Explicit input menu, formatting, 124 one-byte offsets and best offset 4 / 23 hits')
 
@@ -96,22 +97,23 @@ def run(args: argparse.Namespace) -> None:
             assert '118 B' in page.locator('#selectionInfo').inner_text()
             page.locator('[data-byte="4"]').click(button='right')
             page.get_by_role('menuitem', name='HEX のみコピー', exact=True).click()
+            expect(page.locator('body')).to_have_attribute('data-last-copy', re.compile(r'^A6 66(?: [0-9A-F]{2}){116}$'))
             copied = page.evaluate('window.__lastCopy')
             assert copied.startswith('A6 66') and len(copied.split()) == 118
             page.locator('.tree-row[data-node="2"]').click()
             page.locator('#nodeMenuButton').click()
             page.get_by_role('menuitem', name='値をコピー', exact=True).click()
-            page.wait_for_function("window.__lastCopy==='sensor-01'")
+            expect(page.locator('body')).to_have_attribute('data-last-copy', 'sensor-01')
             page.locator('.tree-row[data-node="2"]').click(button='right')
             page.get_by_role('menuitem', name='表示値をコピー', exact=True).click()
-            page.wait_for_function("window.__lastCopy==='\"sensor-01\"'")
+            expect(page.locator('body')).to_have_attribute('data-last-copy', '"sensor-01"')
             values = page.locator('.tree-value').evaluate_all('(els)=>els.slice(0,8).map(e=>e.getBoundingClientRect().left)')
             assert max(values) - min(values) < 1, values
             checks.append('Aligned values; tree-byte selection; explicit and right-click raw/display/HEX copy')
 
             page.locator('#historyMenuButton').click()
             page.get_by_role('menuitem', name='履歴を固定', exact=True).click()
-            page.wait_for_selector('.pin-mark')
+            expect(page.locator('.pin-mark')).to_be_visible()
             page.locator('.history-item').focus()
             page.keyboard.press('Shift+F10')
             assert page.locator('#contextMenu').is_visible()
@@ -146,14 +148,13 @@ def run(args: argparse.Namespace) -> None:
             page.locator('#sourceInput').fill(json.dumps(value, ensure_ascii=False, indent=2))
             page.locator('#analysisTitle').fill('Telemetry B / 受信データ')
             page.locator('#analyzeButton').click()
-            page.wait_for_function("document.querySelectorAll('.history-item').length===2")
+            expect(page.locator('.history-item')).to_have_count(2)
             second = page.locator('.history-item.active').get_attribute('data-history')
             assert second != first
             page.locator(f'[data-check="{first}"]').check()
             page.locator(f'[data-check="{second}"]').check()
             page.locator('#compareButton').click()
-            page.wait_for_selector('.compare-row.changed')
-            assert page.locator('.compare-row.changed').count() == 3
+            expect(page.locator('.compare-row.changed')).to_have_count(3)
             assert 'seq' in page.locator('#compareView').inner_text()
             checks.append('Separate persisted histories and three structure/value changes')
             page.locator('.tree-row[data-node="2"]').click()
@@ -166,9 +167,9 @@ def run(args: argparse.Namespace) -> None:
                 page.locator('#compareMode').select_option(mode)
                 assert page.locator('.compare-row').count() > 0
             page.locator('#swapCompareButton').click()
-            page.wait_for_function("document.querySelector('#compareLabels').children[1].textContent.includes('Telemetry B')")
+            expect(page.locator('#compareLabels > span').nth(1)).to_contain_text('Telemetry B')
             page.locator('#swapCompareButton').click()
-            page.wait_for_function("document.querySelector('#compareLabels').children[1].textContent.includes('Telemetry A')")
+            expect(page.locator('#compareLabels > span').nth(1)).to_contain_text('Telemetry A')
             page.locator('#expandCompareButton').click()
             assert page.locator('#analysisGrid').is_visible()
             checks.append('Expanded comparison, all four modes, swapping and restoring the workspace')
@@ -224,16 +225,18 @@ def run(args: argparse.Namespace) -> None:
             page.locator('#closeCompareButton').click()
             page.locator('#sourceInput').fill('未対応の形式です。')
             page.locator('#analyzeButton').click()
-            page.wait_for_function("document.querySelector('#inputInfo').textContent.includes('UTF-8')")
-            assert page.locator('#analyzeButton').is_enabled()
+            expect(page.locator('#inputInfo')).to_contain_text('UTF-8')
+            expect(page.locator('#analyzeButton')).to_be_enabled()
             page.locator('#inputFormat').select_option('base64')
             page.locator('#sourceInput').fill('ggEC')
             page.locator('#analyzeButton').click()
-            page.wait_for_function("document.querySelector('#metricHits').textContent==='3'")
+            expect(page.locator('#metricHits')).to_have_text('3')
+            expect(page.locator('#analyzeButton')).to_be_enabled()
             page.locator('#sampleButton').click()
             page.get_by_role('menuitem', name='CBOR Sequence · 連続した3項目').click()
             page.keyboard.press('Control+Enter')
-            page.wait_for_function("document.querySelector('#metricItems').textContent==='3'")
+            expect(page.locator('#metricItems')).to_have_text('3')
+            expect(page.locator('#analyzeButton')).to_be_enabled()
             checks.append('New analysis restores input; unknown-text recovery; Base64 and Diagnostic sequence keyboard analysis')
             assert not errors, errors
             checks.append('No uncaught browser JavaScript errors')

@@ -6,7 +6,7 @@ python tests/browser_auto_input.py --url http://localhost:8080 --chromium /usr/b
 import argparse
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 
 def run(args):
@@ -21,7 +21,7 @@ def run(args):
         page.on("pageerror", lambda error: errors.append(str(error)))
         try:
             page.goto(args.url)
-            page.wait_for_function("document.querySelector('#serverState').textContent.includes('接続済み')")
+            expect(page.locator("#serverState")).to_contain_text("接続済み")
             page.locator("#newButton").click()
             assert page.locator("#inputFormat").input_value() == "auto"
 
@@ -62,7 +62,7 @@ def run(args):
             assert "分断" in page.locator("#inputInfo").inner_text()
             page.locator("#inputMenuButton").click()
             page.get_by_role("menuitem", name="HEX を整形（16 B / 行）").click()
-            page.wait_for_function("document.querySelector('#statusMessage').textContent.includes('元の入力を保持')")
+            expect(page.locator("#statusMessage")).to_contain_text("元の入力を保持")
             assert page.locator("#sourceInput").input_value() == source
             page.locator("#hexView").click(button="right")
             page.get_by_role("menuitem", name="すべて選択").click()
@@ -85,7 +85,7 @@ def run(args):
                 ("all-bytes.hex", bytes(range(256)), bytes(range(256)).hex(), "binary"),
             ]:
                 page.locator("#fileInput").set_input_files({"name": name, "mimeType": "application/octet-stream", "buffer": raw})
-                page.wait_for_function("name => document.querySelector('#analysisTitle').value === name", arg=name)
+                expect(page.locator("#analysisTitle")).to_have_value(name)
                 file_record = submit()
                 assert file_record["hex"] == expected, (name, file_record["hex"])
                 assert file_record["result"]["input"]["format"] == detected, (name, file_record["result"]["input"])
@@ -104,9 +104,9 @@ def run(args):
             assert record["hex"] == text.encode().hex()
             assert record["result"]["input"]["format"] == "text"
             page.reload()
-            page.wait_for_function("document.querySelector('#serverState').textContent.includes('接続済み')")
+            expect(page.locator("#serverState")).to_contain_text("接続済み")
             page.locator(f'.history-item[data-history="{record["id"]}"]').click()
-            page.wait_for_function("s => document.querySelector('#sourceInput').value === s", arg=text)
+            expect(page.locator("#sourceInput")).to_have_value(text)
             assert "UTF-8" in page.locator("#inputInfo").inner_text()
             checks.append("Unknown input keeps its source, byte representation and detected format after reload")
 

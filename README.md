@@ -115,10 +115,12 @@ python app.py
 ```sh
 playwright install chromium
 python tests/browser_smoke.py --url http://localhost:8080 --output artifacts
+python tests/browser_formal.py --url http://localhost:8080 --output test-evidence/formal
+python tests/browser_auto_input.py --url http://localhost:8080 --output test-evidence/auto-input
 ```
 
 ブラウザーからローカル HTTP を利用できない制限環境では、`--in-process` が同じ UI を ASGI TestClient に接続します。このモードは DOM 操作と API の結合テストであり、ブラウザーの HTTP 経路・CSP・Docker の検証ではありません。
 
-初期実装では、ユニット / API / 実 HTTP 再起動テスト、RFC の例、不正入力、独立パーサーと 500 種類のランダム入力の全オフセット照合、Playwright の画面操作を確認しています。Docker CLI のない作業環境のため、**Docker イメージのビルド・コンテナ起動・利用先ホストへのデプロイは未検証**です。
+ユニット / API / 実 HTTP 再起動テストでは、RFC の例、不正入力、独立パーサーと 500 種類のランダム入力の全オフセット照合に加え、自動判定・ログとダンプの抽出・欠損の境界・元入力の保存を確認します。GitHub Actions は同じテストに続き、Docker イメージをビルド・起動し、実 HTTP で Playwright の画面操作・ファイル読込・履歴・比較・表示幅を検証します。スクリーンショットとログは `cbor-test-evidence` に保存します。CI ではテスト用コンテナのみを起動し、利用先ホストへの自動デプロイは行いません。
 
 仕様参照: [RFC 8949](https://www.rfc-editor.org/rfc/rfc8949.html)、[RFC 8742](https://www.rfc-editor.org/rfc/rfc8742.html)。
